@@ -10,4 +10,5 @@ export interface IChat {
   }[];
   deletedFor: Types.ObjectId[];
   isRead: boolean;
+  groupId?: Types.ObjectId;
 }

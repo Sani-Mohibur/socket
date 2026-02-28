@@ -4,6 +4,7 @@ import { jwtHelpers } from '../../helpers/jwtHelpers';
 import config from '../../config';
 import { registerChatHandlers } from './chat.handler';
 import { registerUserHandlers } from './user.handler';
+import { Group } from '../group/group.model';
 
 const onlineUsers = new Map<string, string>();
 
@@ -37,6 +38,17 @@ export const initSocket = (httpServer: HttpServer) => {
   io.on('connection', (socket: any) => {
     const userId = socket.user.id;
     socket.join(userId);
+
+    (async () => {
+      try {
+        const userGroups = await Group.find({ members: userId });
+        userGroups.forEach((group) => {
+          socket.join(group._id.toString());
+        });
+      } catch (err) {
+        console.error('❌ Error joining group rooms:', err);
+      }
+    })();
 
     // Add to online map and broadcast status
     onlineUsers.set(userId, socket.id);
