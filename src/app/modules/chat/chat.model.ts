@@ -6,12 +6,9 @@ const chatSchema = new Schema<IChat>(
     sender: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     receiver: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     message: { type: String, default: '' },
-    images: [
-      {
-        url: { type: String },
-        publicId: { type: String },
-      },
-    ],
+    images: [{ url: { type: String }, publicId: { type: String } }],
+    deletedFor: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+    isRead: { type: Boolean, default: false },
   },
   {
     timestamps: true,

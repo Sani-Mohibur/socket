@@ -2,15 +2,10 @@ import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import { jwtHelpers } from '../../helpers/jwtHelpers';
 import config from '../../config';
-import { Chat } from '../chat/chat.model';
-import { Types } from 'mongoose';
-import { User } from '../user/user.model';
+import { registerChatHandlers } from './chat.handler';
+import { registerUserHandlers } from './user.handler';
 
-interface SendMessageData {
-  receiverId: string;
-  message?: string;
-  images?: Array<{ url: string; publicId: string }>;
-}
+const onlineUsers = new Map<string, string>();
 
 export const initSocket = (httpServer: HttpServer) => {
   const io = new Server(httpServer, {
@@ -42,52 +37,19 @@ export const initSocket = (httpServer: HttpServer) => {
   io.on('connection', (socket: any) => {
     const userId = socket.user.id;
     socket.join(userId);
-    console.log(`🔌 User ${userId} joined their own room`);
 
-    socket.on('send-message', async (data: SendMessageData) => {
-      try {
-        const { receiverId, message, images } = data;
+    // Add to online map and broadcast status
+    onlineUsers.set(userId, socket.id);
+    io.emit('user-status-changed', { userId, status: 'online' });
+    console.log(`🔌 User ${userId} joined, online count: ${onlineUsers.size}`);
 
-        if (!Types.ObjectId.isValid(receiverId)) {
-          throw new Error('Invalid receiver ID format');
-        }
-
-        const receiverExists = await User.findById(receiverId);
-        if (!receiverExists) {
-          throw new Error('Receiver not found');
-        }
-
-        const newChat = await Chat.create({
-          sender: userId,
-          receiver: receiverId,
-          message: message || '',
-          images: images || [],
-        });
-
-        io.to(receiverId).to(userId).emit('receive-message', newChat);
-      } catch (error: any) {
-        socket.emit('error', { message: error.message });
-      }
-    });
-
-    socket.on('get-chat-history', async (payload: { targetUserId: string }) => {
-      try {
-        const messages = await Chat.find({
-          $or: [
-            { sender: socket.user.id, receiver: payload.targetUserId },
-            { sender: payload.targetUserId, receiver: socket.user.id },
-          ],
-        }).sort({ createdAt: 1 });
-
-        // Send history back only to the requester
-        socket.emit('chat-history', messages);
-      } catch (err) {
-        console.error('❌ Error fetching history:', err);
-      }
-    });
+    registerChatHandlers(io, socket);
+    registerUserHandlers(io, socket);
 
     socket.on('disconnect', () => {
-      console.log('❌ User disconnected');
+      onlineUsers.delete(userId);
+      io.emit('user-status-changed', { userId, status: 'offline' });
+      console.log(`❌ User ${userId} disconnected`);
     });
   });
 

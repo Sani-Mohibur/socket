@@ -8,4 +8,6 @@ export interface IChat {
     url: string;
     publicId: string;
   }[];
+  deletedFor: Types.ObjectId[];
+  isRead: boolean;
 }
