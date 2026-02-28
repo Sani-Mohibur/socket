@@ -6,9 +6,11 @@ import { fileDeleter } from '../../utils/deleteFile';
 import { Group } from '../group/group.model';
 
 interface SendMessageData {
-  receiverId: string;
+  receiverId?: string;
+  groupId?: string;
   message?: string;
   images?: Array<{ url: string; publicId: string }>;
+  replyTo?: string; // New field
 }
 
 interface DeleteMessageData {
@@ -23,7 +25,7 @@ export const registerChatHandlers = (io: Server, socket: any) => {
     'send-message',
     async (data: SendMessageData & { groupId?: string }) => {
       try {
-        const { receiverId, groupId, message, images } = data;
+        const { receiverId, groupId, message, images, replyTo } = data;
 
         // 1. Validation Logic
         if (groupId) {
@@ -46,6 +48,8 @@ export const registerChatHandlers = (io: Server, socket: any) => {
           receiver: receiverId ? new Types.ObjectId(receiverId) : null,
           message: message || '',
           images: images || [],
+          groupId: groupId ? new Types.ObjectId(groupId) : null,
+          replyTo: replyTo ? new Types.ObjectId(replyTo) : null,
         };
 
         if (groupId) {
@@ -58,7 +62,7 @@ export const registerChatHandlers = (io: Server, socket: any) => {
         if (groupId) {
           // Broadcast to all group members via the group room
           io.to(groupId).emit('receive-message', newChat);
-        } else {
+        } else if (receiverId) {
           // Private message to specific users
           io.to(receiverId).to(userId).emit('receive-message', newChat);
         }
@@ -150,6 +154,41 @@ export const registerChatHandlers = (io: Server, socket: any) => {
         io.to(message.sender.toString())
           .to(message.receiver.toString())
           .emit('message-edited', updatedMessage);
+      } catch (error: any) {
+        socket.emit('error', { message: error.message });
+      }
+    },
+  );
+
+  socket.on(
+    'react-to-message',
+    async (data: { messageId: string; emoji: string }) => {
+      try {
+        const { messageId, emoji } = data;
+
+        const updatedChat = await Chat.findByIdAndUpdate(
+          messageId,
+          { $push: { reactions: { userId: socket.user.id, emoji } } },
+          { new: true },
+        );
+
+        if (!updatedChat) throw new Error('Message not found');
+
+        // 2. Unified Routing
+        // Check if it's a group or private message using the updated document
+        if (updatedChat.groupId) {
+          io.to(updatedChat.groupId.toString()).emit('message-reacted', {
+            messageId,
+            reactions: updatedChat.reactions,
+          });
+        } else if (updatedChat.receiver) {
+          io.to(updatedChat.receiver.toString())
+            .to(updatedChat.sender.toString())
+            .emit('message-reacted', {
+              messageId,
+              reactions: updatedChat.reactions,
+            });
+        }
       } catch (error: any) {
         socket.emit('error', { message: error.message });
       }

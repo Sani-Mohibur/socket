@@ -10,6 +10,13 @@ const chatSchema = new Schema<IChat>(
     deletedFor: [{ type: Schema.Types.ObjectId, ref: 'User' }],
     isRead: { type: Boolean, default: false },
     groupId: { type: Schema.Types.ObjectId, ref: 'Group', default: null },
+    reactions: [
+      {
+        userId: { type: Schema.Types.ObjectId, ref: 'User' },
+        emoji: { type: String },
+      },
+    ],
+    replyTo: { type: Schema.Types.ObjectId, ref: 'Chat', default: null },
   },
   {
     timestamps: true,
