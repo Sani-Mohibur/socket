@@ -4,15 +4,11 @@ import { Types } from 'mongoose';
 
 export const registerUserHandlers = (io: Server, socket: any) => {
   socket.on('typing', (data: { receiverId: string }) => {
-    socket
-      .to(data.receiverId)
-      .emit('user-typing', { senderId: socket.user.id });
+    socket.to(data.receiverId).emit('user-typing', { senderId: socket.user.id });
   });
 
   socket.on('stop-typing', (data: { receiverId: string }) => {
-    socket
-      .to(data.receiverId)
-      .emit('user-stop-typing', { senderId: socket.user.id });
+    socket.to(data.receiverId).emit('user-stop-typing', { senderId: socket.user.id });
   });
 
   socket.on('mark-as-read', async (data: { senderId: string }) => {

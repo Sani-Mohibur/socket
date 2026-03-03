@@ -4,13 +4,15 @@ import { User } from '../user/user.model';
 import { Chat } from '../chat/chat.model';
 import { fileDeleter } from '../../utils/deleteFile';
 import { Group } from '../group/group.model';
+import { paginationHelper } from '../../helpers/paginationHelper';
+import pick from '../../utils/pick';
 
 interface SendMessageData {
   receiverId?: string;
   groupId?: string;
   message?: string;
   images?: Array<{ url: string; publicId: string }>;
-  replyTo?: string; // New field
+  replyTo?: string;
 }
 
 interface DeleteMessageData {
@@ -21,56 +23,52 @@ interface DeleteMessageData {
 export const registerChatHandlers = (io: Server, socket: any) => {
   const userId = socket.user.id;
 
-  socket.on(
-    'send-message',
-    async (data: SendMessageData & { groupId?: string }) => {
-      try {
-        const { receiverId, groupId, message, images, replyTo } = data;
+  socket.on('send-message', async (data: SendMessageData & { groupId?: string }) => {
+    try {
+      const { receiverId, groupId, message, images, replyTo } = data;
 
-        // 1. Validation Logic
-        if (groupId) {
-          // Logic for Group Message
-          const groupExists = await Group.findById(groupId);
-          if (!groupExists) throw new Error('Group not found');
-        } else if (receiverId) {
-          // Logic for Private Message
-          if (!Types.ObjectId.isValid(receiverId))
-            throw new Error('Invalid receiver ID');
-          const receiverExists = await User.findById(receiverId);
-          if (!receiverExists) throw new Error('Receiver not found');
-        } else {
-          throw new Error('Either receiverId or groupId is required');
-        }
-
-        // 2. Create the message
-        const chatData: any = {
-          sender: userId,
-          receiver: receiverId ? new Types.ObjectId(receiverId) : null,
-          message: message || '',
-          images: images || [],
-          groupId: groupId ? new Types.ObjectId(groupId) : null,
-          replyTo: replyTo ? new Types.ObjectId(replyTo) : null,
-        };
-
-        if (groupId) {
-          chatData.groupId = new Types.ObjectId(groupId);
-        }
-
-        const newChat = await Chat.create(chatData);
-
-        // 3. Conditional Routing
-        if (groupId) {
-          // Broadcast to all group members via the group room
-          io.to(groupId).emit('receive-message', newChat);
-        } else if (receiverId) {
-          // Private message to specific users
-          io.to(receiverId).to(userId).emit('receive-message', newChat);
-        }
-      } catch (error: any) {
-        socket.emit('error', { message: error.message });
+      // 1. Validation Logic
+      if (groupId) {
+        // Logic for Group Message
+        const groupExists = await Group.findById(groupId);
+        if (!groupExists) throw new Error('Group not found');
+      } else if (receiverId) {
+        // Logic for Private Message
+        if (!Types.ObjectId.isValid(receiverId)) throw new Error('Invalid receiver ID');
+        const receiverExists = await User.findById(receiverId);
+        if (!receiverExists) throw new Error('Receiver not found');
+      } else {
+        throw new Error('Either receiverId or groupId is required');
       }
-    },
-  );
+
+      // 2. Create the message
+      const chatData: any = {
+        sender: userId,
+        receiver: receiverId ? new Types.ObjectId(receiverId) : null,
+        message: message || '',
+        images: images || [],
+        groupId: groupId ? new Types.ObjectId(groupId) : null,
+        replyTo: replyTo ? new Types.ObjectId(replyTo) : null,
+      };
+
+      if (groupId) {
+        chatData.groupId = new Types.ObjectId(groupId);
+      }
+
+      const newChat = await Chat.create(chatData);
+
+      // 3. Conditional Routing
+      if (groupId) {
+        // Broadcast to all group members via the group room
+        io.to(groupId).emit('receive-message', newChat);
+      } else if (receiverId) {
+        // Private message to specific users
+        io.to(receiverId).emit('receive-message', newChat);
+      }
+    } catch (error: any) {
+      socket.emit('error', { message: error.message });
+    }
+  });
 
   socket.on('get-chat-history', async (payload: { targetUserId: string }) => {
     try {
@@ -104,125 +102,115 @@ export const registerChatHandlers = (io: Server, socket: any) => {
         // 1. Delete images from Cloudinary
         if (message.images && message.images.length > 0) {
           await Promise.all(
-            message.images.map((img) =>
-              fileDeleter.deleteFromCloudinary(img.publicId),
-            ),
+            message.images.map((img) => fileDeleter.deleteFromCloudinary(img.publicId)),
           );
         }
         // 2. Remove from DB
         await Chat.findByIdAndDelete(messageId);
+
+        // 3. Broadcast to BOTH parties for everyone-deletion
+        io.to(socket.user.id)
+          .to(message.receiver.toString())
+          .emit('message-deleted', { messageId });
       } else {
         // "Delete for me" only
         await Chat.findByIdAndUpdate(messageId, {
           $addToSet: { deletedFor: socket.user.id },
         });
-      }
 
-      // Emit confirmation to both parties to update UI
-      io.to(socket.user.id)
-        .to(message.receiver.toString())
-        .emit('message-deleted', { messageId });
+        // 4. Emit ONLY to the sender for private-deletion
+        socket.emit('message-deleted', { messageId });
+      }
     } catch (error: any) {
       socket.emit('error', { message: error.message });
     }
   });
 
-  socket.on(
-    'edit-message',
-    async (data: { messageId: string; newMessage: string }) => {
-      try {
-        const { messageId, newMessage } = data;
-        const message = await Chat.findById(messageId);
+  socket.on('edit-message', async (data: { messageId: string; newMessage: string }) => {
+    try {
+      const { messageId, newMessage } = data;
+      const message = await Chat.findById(messageId);
 
-        if (!message) throw new Error('Message not found');
-        if (message.sender.toString() !== socket.user.id)
-          throw new Error('Unauthorized');
+      if (!message) throw new Error('Message not found');
+      if (message.sender.toString() !== socket.user.id) throw new Error('Unauthorized');
 
-        // Check 15-minute time limit
-        const timeElapsed =
-          (Date.now() - new Date((message as any).createdAt).getTime()) / 60000;
-        if (timeElapsed > 15) throw new Error('Edit time limit exceeded');
+      // Check 15-minute time limit
+      const timeElapsed = (Date.now() - new Date((message as any).createdAt).getTime()) / 60000;
+      if (timeElapsed > 15) throw new Error('Edit time limit exceeded');
 
-        // Update message
-        const updatedMessage = await Chat.findByIdAndUpdate(
+      // Update message
+      const updatedMessage = await Chat.findByIdAndUpdate(
+        messageId,
+        { $set: { message: newMessage, isEdited: true } },
+        { returnDocument: 'after' },
+      );
+
+      // Notify both sender and receiver
+      io.to(message.sender.toString())
+        .to(message.receiver.toString())
+        .emit('message-edited', updatedMessage);
+    } catch (error: any) {
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  socket.on('react-to-message', async (data: { messageId: string; emoji: string }) => {
+    try {
+      const { messageId, emoji } = data;
+
+      const updatedChat = await Chat.findByIdAndUpdate(
+        messageId,
+        { $push: { reactions: { userId: socket.user.id, emoji } } },
+        { new: true },
+      );
+
+      if (!updatedChat) throw new Error('Message not found');
+
+      // Unified Routing
+      // Check if it's a group or private message using the updated document
+      if (updatedChat.groupId) {
+        io.to(updatedChat.groupId.toString()).emit('message-reacted', {
           messageId,
-          { $set: { message: newMessage, isEdited: true } },
-          { new: true },
-        );
-
-        // Notify both sender and receiver
-        io.to(message.sender.toString())
-          .to(message.receiver.toString())
-          .emit('message-edited', updatedMessage);
-      } catch (error: any) {
-        socket.emit('error', { message: error.message });
-      }
-    },
-  );
-
-  socket.on(
-    'react-to-message',
-    async (data: { messageId: string; emoji: string }) => {
-      try {
-        const { messageId, emoji } = data;
-
-        const updatedChat = await Chat.findByIdAndUpdate(
-          messageId,
-          { $push: { reactions: { userId: socket.user.id, emoji } } },
-          { new: true },
-        );
-
-        if (!updatedChat) throw new Error('Message not found');
-
-        // 2. Unified Routing
-        // Check if it's a group or private message using the updated document
-        if (updatedChat.groupId) {
-          io.to(updatedChat.groupId.toString()).emit('message-reacted', {
+          reactions: updatedChat.reactions,
+        });
+      } else if (updatedChat.receiver) {
+        io.to(updatedChat.receiver.toString())
+          .to(updatedChat.sender.toString())
+          .emit('message-reacted', {
             messageId,
             reactions: updatedChat.reactions,
           });
-        } else if (updatedChat.receiver) {
-          io.to(updatedChat.receiver.toString())
-            .to(updatedChat.sender.toString())
-            .emit('message-reacted', {
-              messageId,
-              reactions: updatedChat.reactions,
-            });
-        }
-      } catch (error: any) {
-        socket.emit('error', { message: error.message });
       }
-    },
-  );
+    } catch (error: any) {
+      socket.emit('error', { message: error.message });
+    }
+  });
 
-  socket.on(
-    'create-group',
-    async (data: { name: string; members: string[] }) => {
-      try {
-        const { name, members } = data;
+  socket.on('create-group', async (data: { name: string; members: string[] }) => {
+    try {
+      const { name, members } = data;
 
-        // Create the group
-        const newGroup = await Group.create({
-          name,
-          members: [...members, userId], // Add creator to members
-          admins: [userId],
-          createdBy: userId,
-        });
+      // Create the group
+      const newGroup = await Group.create({
+        name,
+        members: [...members, userId], // Add creator to members
+        admins: [userId],
+        createdBy: userId,
+      });
 
-        // Notify members to join the room
-        members.forEach((memberId) => {
-          io.to(memberId).emit('added-to-group', { groupId: newGroup._id });
-        });
+      // Notify members to join the room
+      members.forEach((memberId) => {
+        io.to(memberId).emit('added-to-group', { groupId: newGroup._id });
+      });
 
-        // Creator joins their own room
-        socket.join(newGroup._id.toString());
+      // Creator joins their own room
+      socket.join(newGroup._id.toString());
 
-        socket.emit('group-created', newGroup);
-      } catch (error: any) {
-        socket.emit('error', { message: error.message });
-      }
-    },
-  );
+      socket.emit('group-created', newGroup);
+    } catch (error: any) {
+      socket.emit('error', { message: error.message });
+    }
+  });
 
   socket.on('get-my-groups', async () => {
     try {
@@ -260,4 +248,46 @@ export const registerChatHandlers = (io: Server, socket: any) => {
       socket.emit('error', { message: error.message });
     }
   });
+
+  // prettier-ignore
+  socket.on('get-media-gallery', async (payload: {
+      groupId?: string;
+      receiverId?: string;
+      page?: number;
+      limit?: number;
+      sortBy?: string;
+      sortOrder?: 'asc' | 'desc';
+    }) => {
+      try {
+        const { groupId, receiverId } = payload;
+        const paginationOptions = pick(payload, ['page', 'limit', 'sortBy', 'sortOrder']);
+        const { limit, skip, sortBy, sortOrder } =
+          paginationHelper.calculatePagination(paginationOptions);
+
+        const query: any = {
+          images: { $exists: true, $ne: [] },
+        };
+
+        if (groupId) {
+          query.groupId = new Types.ObjectId(groupId);
+        } else if (receiverId) {
+          query.$or = [
+            { sender: userId, receiver: receiverId },
+            { sender: receiverId, receiver: userId },
+          ];
+        } else {
+          throw new Error('Either groupId or receiverId is required');
+        }
+
+        const mediaMessages = await Chat.find(query)
+          .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
+          .skip(skip)
+          .limit(limit);
+
+        socket.emit('media-gallery', mediaMessages);
+      } catch (error: any) {
+        socket.emit('error', { message: error.message });
+      }
+    },
+  );
 };

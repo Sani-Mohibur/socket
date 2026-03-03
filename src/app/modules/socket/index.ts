@@ -1,5 +1,5 @@
 import { Server as HttpServer } from 'http';
-import { Server, Socket } from 'socket.io';
+import { Server } from 'socket.io';
 import { jwtHelpers } from '../../helpers/jwtHelpers';
 import config from '../../config';
 import { registerChatHandlers } from './chat.handler';
@@ -19,15 +19,11 @@ export const initSocket = (httpServer: HttpServer) => {
   // Authentication Middleware
   io.use((socket: any, next) => {
     const authHeader = socket.handshake.headers?.authorization;
-    const token =
-      socket.handshake.auth?.token || (authHeader && authHeader.split(' ')[1]);
+    const token = socket.handshake.auth?.token || (authHeader && authHeader.split(' ')[1]);
     if (!token) return next(new Error('Authentication error: Token missing'));
 
     try {
-      const decoded = jwtHelpers.verifyToken(
-        token,
-        config.jwt.access_secret as string,
-      );
+      const decoded = jwtHelpers.verifyToken(token, config.jwt.access_secret as string);
       socket.user = decoded; // Attach user data to socket
       next();
     } catch (err) {
