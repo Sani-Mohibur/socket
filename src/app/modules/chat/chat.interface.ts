@@ -16,4 +16,5 @@ export interface IChat {
   groupId?: Types.ObjectId | null;
   reactions?: IReaction[];
   replyTo?: Types.ObjectId | null;
+  isEdited: boolean;
 }
