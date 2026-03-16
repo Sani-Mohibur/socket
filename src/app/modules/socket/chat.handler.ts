@@ -6,6 +6,7 @@ import { fileDeleter } from '../../utils/deleteFile';
 import { Group } from '../group/group.model';
 import { paginationHelper } from '../../helpers/paginationHelper';
 import pick from '../../utils/pick';
+import QueryBuilder from '../../builder/QueryBuilder';
 
 interface SendMessageData {
   receiverId?: string;
@@ -285,6 +286,101 @@ export const registerChatHandlers = (io: Server, socket: any) => {
           .limit(limit);
 
         socket.emit('media-gallery', mediaMessages);
+      } catch (error: any) {
+        socket.emit('error', { message: error.message });
+      }
+    },
+  );
+
+  socket.on('pin-message', async (data: { messageId: string }) => {
+    try {
+      const { messageId } = data;
+      const message = await Chat.findById(messageId);
+
+      if (!message) throw new Error('Message not found');
+
+      // Toggle the pin status
+      const newPinnedStatus = !message.isPinned;
+
+      const updatedMessage = await Chat.findByIdAndUpdate(
+        messageId,
+        { $set: { isPinned: newPinnedStatus } },
+        { new: true },
+      );
+
+      // Broadcast the update to the relevant room
+      const targetRoom = message.groupId
+        ? message.groupId.toString()
+        : [message.sender.toString(), message.receiver.toString()].sort().join('_');
+
+      io.to(targetRoom).emit('message-pinned', {
+        messageId,
+        isPinned: newPinnedStatus,
+      });
+    } catch (error: any) {
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // prettier-ignore
+  socket.on('search-messages', async (payload: { 
+    searchTerm: string; page?: number; limit?: number }) => {
+      try {
+        const userId = new Types.ObjectId(socket.user.id);
+
+        // 1. Get IDs of all groups the user is a member of
+        const userGroups = await Group.find({ members: userId }).select('_id');
+        const groupIds = userGroups.map((g) => g._id);
+
+        // 2. Base query: restrict to conversations user is part of
+        const baseQuery = {
+          $or: [{ sender: userId }, { receiver: userId }, { groupId: { $in: groupIds } }],
+        };
+
+        // 3. Initialize QueryBuilder with base filter
+        const chatQuery = new QueryBuilder(Chat.find(baseQuery), payload)
+          .search(['message']) // searchable field
+          .sort()
+          .paginate();
+
+        const results = await chatQuery.modelQuery;
+        socket.emit('search-results', results);
+      } catch (error: any) {
+        socket.emit('error', { message: error.message });
+      }
+    },
+  );
+
+  socket.on(
+    'toggle-admin',
+    async (data: { groupId: string; targetUserId: string; action: 'promote' | 'demote' }) => {
+      try {
+        const { groupId, targetUserId, action } = data;
+        const group = await Group.findById(groupId);
+
+        if (!group) throw new Error('Group not found');
+
+        // Check if requester is an admin
+        if (!group.admins.includes(socket.user.id as any)) {
+          throw new Error('Unauthorized: Only admins can change roles');
+        }
+
+        // Verify target user is a group member
+        if (!group.members.includes(targetUserId as any)) {
+          throw new Error('Target user is not a member of this group');
+        }
+
+        if (action === 'promote') {
+          await Group.findByIdAndUpdate(groupId, { $addToSet: { admins: targetUserId } });
+        } else if (action === 'demote') {
+          // Prevent last admin from removing themselves if desired
+          if (group.admins.length === 1 && group.admins[0]?.toString() === targetUserId) {
+            throw new Error('Cannot demote the only admin');
+          }
+          await Group.findByIdAndUpdate(groupId, { $pull: { admins: targetUserId } });
+        }
+
+        io.to(groupId).emit('admin-status-updated', { targetUserId, action });
       } catch (error: any) {
         socket.emit('error', { message: error.message });
       }
