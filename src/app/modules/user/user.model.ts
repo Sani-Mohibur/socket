@@ -29,10 +29,7 @@ const userSchema = new Schema<IUser>(
 // Password Hashing Middleware
 userSchema.pre('save', async function (this: IUser & Document) {
   if (this.isModified('password') && this.password) {
-    this.password = await bcrypt.hash(
-      this.password,
-      Number(config.bcrypt_salt_rounds),
-    );
+    this.password = await bcrypt.hash(this.password, Number(config.bcrypt_salt_rounds));
   }
 });
 
