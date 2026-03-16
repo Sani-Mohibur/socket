@@ -18,6 +18,7 @@ const chatSchema = new Schema<IChat>(
     ],
     replyTo: { type: Schema.Types.ObjectId, ref: 'Chat', default: null },
     isEdited: { type: Boolean, default: false },
+    isPinned: { type: Boolean, default: false },
   },
   {
     timestamps: true,

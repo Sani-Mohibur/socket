@@ -17,4 +17,5 @@ export interface IChat {
   reactions?: IReaction[];
   replyTo?: Types.ObjectId | null;
   isEdited: boolean;
+  isPinned: boolean;
 }
